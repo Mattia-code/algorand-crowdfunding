@@ -22,6 +22,13 @@ export const main = Reach.App(() => {
     ...common,
     seeParams: Fun([Params], Null),
     getDonation: Fun([UInt], MUInt),
+    showMap: Fun([Address, UInt], Null)
+  });
+
+  // Investor as API?!
+  const I = API('InvestorAPI', {
+    invest: Fun([], Null),
+    retriveDonation: Fun([], Null),
   });
 
   init();
@@ -37,11 +44,12 @@ export const main = Reach.App(() => {
   
   Creator.pay(amt);
   const end = lastConsensusTime() + lenInBlocks;
+  const history = new Map(UInt);
 
   Investor.interact.seeParams([projectName, projectInfo, targetValue, end]);
 
-  const [lastInvestor, lastDonation, currentPrice] =
-    parallelReduce([Creator, amt, amt])
+  const [lastInvestor, lastDonation, currentPrice, numInvestors] =
+    parallelReduce([Creator, amt, amt, 0])
       .invariant(balance() == currentPrice)
       .while(lastConsensusTime() <= end)
       .case(Investor,
@@ -54,22 +62,51 @@ export const main = Reach.App(() => {
         }),  
         ((donation) => donation),
         ((donation) => {
+          const isAmountPresent = fromSome(history[this], 0)
+          if(isAmountPresent){
+            history[this] = isAmountPresent + donation;
+          }else{
+            history[this] = donation;
+          }
+          history[this] = fromSome(history[this], 0) + donation;
           Creator.interact.seeDonation(this, donation);
-          return [this, donation, currentPrice+donation];
+          return [this, donation, currentPrice+donation, isAmountPresent ? numInvestors : numInvestors+1];
         }))
       .timeout(absoluteTime(end), () => {
         Creator.interact.timeout();
         Creator.publish();
-        return [lastInvestor, lastDonation, currentPrice];
+        return [lastInvestor, lastDonation, currentPrice, numInvestors];
       });
+
+
+  // const numInvestors = history.size()
+  const failPayTimeout = lastConsensusTime() + lenInBlocks;
   
-  // qui dovrebbe restiruire a tutti i partecipanti il totale versato se il valore non
-  // è stato raggiunto.
-  if(currentPrice>=targetValue){
-    transfer(currentPrice).to(Creator)
-  }else{
-    transfer(lastDonation).to(lastInvestor)
+  // forse è la strada giusta!!!
+  if(targetValue>currentPrice){
+    const [timedOut_, unpaidInvestors, reamaningAmount] =
+      parallelReduce([false, numInvestors, currentPrice])
+        .invariant(balance() == reamaningAmount)
+        .while(!timedOut_ && unpaidInvestors > 0)
+        .api_(I.retriveDonation, () => {
+          check(fromSome(history[this], 0)!=0);
+          return [ (k) => {
+            const amountToRefound = fromSome(history[this], 0)
+            if(amountToRefound>0 && balance()>=amountToRefound){
+              transfer(amountToRefound).to(this);
+            }
+            k(null);
+            return [false, unpaidInvestors - 1, reamaningAmount-amountToRefound];
+          }];
+        })
+        .timeout(failPayTimeout, () => {
+          Creator.interact.timeout();
+          Creator.publish();
+          return [true, unpaidInvestors, reamaningAmount];
+        });
   }
+
+  transfer(balance()).to(Creator)
   commit();
 
   each([Creator, Investor], () => interact.showOutcome(currentPrice));

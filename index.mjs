@@ -59,6 +59,9 @@ const names = ["Creator", "Alice", "Bob", "Carla"];
           console.log(`${n} donate ${stdlib.formatCurrency(donation)} / ${stdlib.formatCurrency(currentValue)}`);
           return ['Some', donation];
         },
+        showMap: (address, total) => {
+          console.log(`${n} - ${stdlib.formatAddress(address)} - ${stdlib.formatCurrency(total)}`)
+        }
       });
       await showBalance(acc, i+1);
       return;
