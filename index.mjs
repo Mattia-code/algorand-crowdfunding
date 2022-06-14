@@ -7,7 +7,7 @@ const investmentStructure = {
   investorInvestment: stdlib.parseCurrency(10),
   investorFailProfit: stdlib.parseCurrency(3),
   investorQuorum: 5,
-  targetContribution: stdlib.parseCurrency(100),
+  targetContribution: stdlib.parseCurrency(35),
   investmentDuration: 300,
   failPayDuration: 300,
 };

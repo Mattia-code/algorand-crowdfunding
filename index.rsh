@@ -85,10 +85,9 @@ export const main = Reach.App(() => {
 
   // Investors are given a change to invest
   const [timedOut, numInvestors, totalContribution] =
-    parallelReduce([false, 0, starterInvestment])
+    parallelReduce([false, 0, creatorInvestment])
     .invariant(balance() == starterInvestment + numInvestors * investorInvestment)
     .invariant(investors.Map.size() == numInvestors)
-    // .invariant(numInvestors <= investorQuorum)
     .while(!timedOut && numInvestors < investorQuorum)
     .api_(I.invest, () => {
       check(!investors.member(this));
