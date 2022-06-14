@@ -2,26 +2,26 @@
 'use strict';
 
 const InvestmentStructureT = Object({
-  creatorInvestment: UInt, // Creator's contribution to the product funding
+  creatorInvestment: UInt,      // Creator's contribution to the product funding
   investorInvestment: UInt,     // Each investor's contribution to the product funding
   investorFailProfit: UInt,     // Each investor's profit if the quorum is not met
   investorQuorum: UInt,         // Target of investors needed to successfully fund the product
-  targetContribution: UInt,
+  targetContribution: UInt,     // Target of contribution needed to successfully fund the product
   investmentDuration: UInt,     // How long funding will be open to investors
   failPayDuration: UInt,        // How long failure pay will be available for investors to claim
 });
 
 export const main = Reach.App(() => {
-  const P = Participant('Product', {
+  const P = Participant('Platform', {
     investmentStructure: InvestmentStructureT,
     ready: Fun([], Null),
   });
-  const E = Participant('Creator', {});
+  const C = Participant('Creator', {});
   const I = API('Investor', {
     invest: Fun([], Null),
     collectFailPay: Fun([], Null),
   });
-  const PA = API('ProductAPI', {
+  const PA = API('PlatformAPI', {
     startInvestment: Fun([], Null),
     investmentTimeout: Fun([], Null),
     failPayTimeout: Fun([], Null),
@@ -61,18 +61,21 @@ export const main = Reach.App(() => {
   // to compensate investors in the case of failure
   const starterInvestment = creatorInvestment
                           + investorFailProfit * (investorQuorum - 1);
-  E.pay(starterInvestment);
-  commit();
 
+  const fee = muldiv(starterInvestment,2,100)
+  
+  C.pay(starterInvestment + fee);
+  transfer(fee).to(P)
+  commit();
   P.interact.ready();
 
-  const awaitProductApi = (apiFunc) => {
+  const awaitPlatformApi = (apiFunc) => {
     const [[], k] = call(apiFunc).assume(() => check(this == P));
     check(this == P);
     k(null);
   }
 
-  awaitProductApi(PA.startInvestment);
+  awaitPlatformApi(PA.startInvestment);
   CP.phase(Phase.Investment());
 
   // In a real-world application, this would probably be absolute
@@ -85,7 +88,7 @@ export const main = Reach.App(() => {
     parallelReduce([false, 0, starterInvestment])
     .invariant(balance() == starterInvestment + numInvestors * investorInvestment)
     .invariant(investors.Map.size() == numInvestors)
-    .invariant(numInvestors <= investorQuorum)
+    // .invariant(numInvestors <= investorQuorum)
     .while(!timedOut && numInvestors < investorQuorum)
     .api_(I.invest, () => {
       check(!investors.member(this));
@@ -96,7 +99,7 @@ export const main = Reach.App(() => {
       }];
     })
     .timeout(investmentTimeout, () => {
-      awaitProductApi(PA.investmentTimeout);
+      awaitPlatformApi(PA.investmentTimeout);
       return [true, numInvestors, totalContribution];
     });
 
@@ -107,7 +110,7 @@ export const main = Reach.App(() => {
     // and any unclaimed fail pay will be given to the product.
     const returnedToCreator = starterInvestment
                                  - investorFailProfit * numInvestors;
-    transfer(returnedToCreator).to(E);
+    transfer(returnedToCreator).to(C);
 
     CP.phase(Phase.FailPay());
 
@@ -130,12 +133,17 @@ export const main = Reach.App(() => {
         }];
       })
       .timeout(failPayTimeout, () => {
-        awaitProductApi(PA.failPayTimeout);
+        awaitPlatformApi(PA.failPayTimeout);
         return [true, unpaidInvestors];
       });
   }
+ 
+  // fee for the platform
+  transfer(muldiv(balance(),2,100)).to(P)
 
-  transfer(balance()).to(P);
+  // contribute for the creator
+  transfer(balance()).to(C);
+
   CP.phase(Phase.Finished());
   commit();
   exit();

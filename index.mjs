@@ -7,17 +7,17 @@ const investmentStructure = {
   investorInvestment: stdlib.parseCurrency(10),
   investorFailProfit: stdlib.parseCurrency(3),
   investorQuorum: 5,
-  targetContribution: stdlib.parseCurrency(30),
+  targetContribution: stdlib.parseCurrency(100),
   investmentDuration: 300,
   failPayDuration: 300,
 };
 
 const run = async (numInvestors, numInvestorsFailPaid) => {
-  const [accProduct, accCreator] = await stdlib.newTestAccounts(2, stdlib.parseCurrency(100));
+  const [accPlatform, accCreator] = await stdlib.newTestAccounts(2, stdlib.parseCurrency(100));
   const investors = await stdlib.newTestAccounts(numInvestors, stdlib.parseCurrency(15));
-  const ctcProduct = accProduct.contract(backend);
-  const ctcCreator = accCreator.contract(backend, ctcProduct.getInfo());
-  const investorCtcs = investors.map(i => i.contract(backend, ctcProduct.getInfo()));
+  const ctcPlatform = accPlatform.contract(backend);
+  const ctcCreator = accCreator.contract(backend, ctcPlatform.getInfo());
+  const investorCtcs = investors.map(i => i.contract(backend, ctcPlatform.getInfo()));
 
   const printBals = async () => {
     const printBal = async (name, acc) => {
@@ -25,7 +25,7 @@ const run = async (numInvestors, numInvestorsFailPaid) => {
       console.log(`  + ${name} has ${bal} ${stdlib.standardUnit}`);
     };
 
-    await printBal('Product', accProduct);
+    await printBal('Platform', accPlatform);
     await printBal('Creator', accCreator);
     for (let i = 0; i < numInvestors; i++) {
       await printBal(`Investor #${i+1}`, investors[i]);
@@ -38,18 +38,18 @@ const run = async (numInvestors, numInvestorsFailPaid) => {
 
   // Launch the contract
   await stdlib.withDisconnect(() => Promise.all([
-    ctcProduct.p.Product({
+    ctcPlatform.p.Platform({
       investmentStructure,
       ready: stdlib.disconnect,
     }),
     ctcCreator.p.Creator({})
   ]));
 
-  await ctcProduct.apis.ProductAPI.startInvestment();
+  await ctcPlatform.apis.PlatformAPI.startInvestment();
 
   let phase;
   do {
-    const ev = await ctcProduct.events.ContractPhase.phase.next();
+    const ev = await ctcPlatform.events.ContractPhase.phase.next();
     phase = ev.what[0][0]; // get the name of the phase from the event structure
     switch (phase) {
       // Funding has started
@@ -61,7 +61,7 @@ const run = async (numInvestors, numInvestorsFailPaid) => {
 
         if (numInvestors < investmentStructure.investorQuorum) {
           await stdlib.wait(investmentStructure.investmentDuration)
-          await ctcProduct.apis.ProductAPI.investmentTimeout();
+          await ctcPlatform.apis.PlatformAPI.investmentTimeout();
         }
         break;
 
@@ -74,7 +74,7 @@ const run = async (numInvestors, numInvestorsFailPaid) => {
 
         if (numInvestorsFailPaid < numInvestors) {
           await stdlib.wait(investmentStructure.failPayDuration);
-          await ctcProduct.apis.ProductAPI.failPayTimeout();
+          await ctcPlatform.apis.PlatformAPI.failPayTimeout();
         }
         break;
 
