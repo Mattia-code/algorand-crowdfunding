@@ -1,70 +1,94 @@
-import { loadStdlib } from '@reach-sh/stdlib';
+import {loadStdlib} from '@reach-sh/stdlib';
 import * as backend from './build/index.main.mjs';
+const stdlib = loadStdlib(process.env);
 
-const N = 3;
-const names = ["Creator", "Alice", "Bob", "Carla"];
+const investmentStructure = {
+  creatorInvestment: stdlib.parseCurrency(20),
+  creatorProfit: stdlib.parseCurrency(5),
+  investorInvestment: stdlib.parseCurrency(10),
+  investorFailProfit: stdlib.parseCurrency(3),
+  investorQuorum: 5,
+  targetContribution: stdlib.parseCurrency(30),
+  investmentDuration: 300,
+  failPayDuration: 300,
+};
 
-(async () => {
-  const stdlib = await loadStdlib(process.env);
-  const startingBalance = stdlib.parseCurrency(100);
-  const [ accCreator, ...accInvestor ] =
-    await stdlib.newTestAccounts(1+N, startingBalance);
+const run = async (numInvestors, numInvestorsFailPaid) => {
+  const [accProduct, accCreator] = await stdlib.newTestAccounts(2, stdlib.parseCurrency(100));
+  const investors = await stdlib.newTestAccounts(numInvestors, stdlib.parseCurrency(15));
+  const ctcProduct = accProduct.contract(backend);
+  const ctcCreator = accCreator.contract(backend, ctcProduct.getInfo());
+  const investorCtcs = investors.map(i => i.contract(backend, ctcProduct.getInfo()));
 
-  await Promise.all( [ accCreator, ...accInvestor ].map(async (acc, i) => {
-    acc.setDebugLabel(names[i]);
-  }));
+  const printBals = async () => {
+    const printBal = async (name, acc) => {
+      const bal = stdlib.formatCurrency(await stdlib.balanceOf(acc));
+      console.log(`  + ${name} has ${bal} ${stdlib.standardUnit}`);
+    };
 
-  const showBalance = async (acc, i) => {
-    const amt = await stdlib.balanceOf(acc);
-    console.log(`${names[i]} has ${stdlib.formatCurrency(amt)} ${stdlib.standardUnit}`);
-  };
+    await printBal('Product', accProduct);
+    await printBal('Creator', accCreator);
+    for (let i = 0; i < numInvestors; i++) {
+      await printBal(`Investor #${i+1}`, investors[i]);
+    }
+  }
 
-  const ctcCreator = accCreator.contract(backend);
+  console.log(`Running contract with ${numInvestors} investors of ${investmentStructure.investorQuorum} needed`);
+  console.log("Starting balances:");
+  await printBals();
 
-  await Promise.all([
-    (async () => {
-      await showBalance(accCreator, 0);
-      const n = names[0];
-      await backend.Creator(ctcCreator, {
-        startCampaign: () => {
-          console.log(`${n} sets parameters of sale`);
-          return [ 'MyProject!', 'Awesome Project!', stdlib.parseCurrency(300), 30 ]
-        },
-        seeDonation: (who, bid) => {
-          console.log(`${n} saw that ${stdlib.formatAddress(who)} donate ${stdlib.formatCurrency(bid)}`);
-        },
-        timeout: () => {
-          console.log(`${n} observes the campaign has hit the timeout`);
-        },
-        showOutcome: (total) => {
-          console.log(`${n} saw has collected ${stdlib.formatCurrency(total)} ${stdlib.standardUnit}`);
-        },
-      });
-      await showBalance(accCreator, 0);
-    })(),
-    ...accInvestor.map(async (acc, i) => {
-      await showBalance(acc, i+1);
-      const n = names[i+1];
-      const ctc = acc.contract(backend, ctcCreator.getInfo());
-      const donation = stdlib.parseCurrency(Math.random() * 10);
-      console.log(`${n} decides to donate ${stdlib.formatCurrency(donation)}`);
-      await backend.Investor(ctc, {
-        showOutcome: (total) => {
-            console.log(`${n} saw has collected ${stdlib.formatCurrency(total)} ${stdlib.standardUnit}`);
-        },
-        seeParams: async ([projectName, projectInfo, targetValue, end]) => {
-          console.log(`${n} sees that the ${projectName} is ${projectInfo}, the target price is ${stdlib.formatCurrency(targetValue)}, and that they have until ${end} to donate`);
-        },
-        getDonation: (currentValue) => {
-          console.log(`${n} donate ${stdlib.formatCurrency(donation)} / ${stdlib.formatCurrency(currentValue)}`);
-          return ['Some', donation];
-        },
-        showMap: (address, total) => {
-          console.log(`${n} - ${stdlib.formatAddress(address)} - ${stdlib.formatCurrency(total)}`)
+  // Launch the contract
+  await stdlib.withDisconnect(() => Promise.all([
+    ctcProduct.p.Product({
+      investmentStructure,
+      ready: stdlib.disconnect,
+    }),
+    ctcCreator.p.Creator({})
+  ]));
+
+  await ctcProduct.apis.ProductAPI.startInvestment();
+
+  let phase;
+  do {
+    const ev = await ctcProduct.events.ContractPhase.phase.next();
+    phase = ev.what[0][0]; // get the name of the phase from the event structure
+    switch (phase) {
+      // Funding has started
+      case 'Investment':
+        for (const [i, ctc] of investorCtcs.entries()) {
+          console.log(`Investor #${i+1} invests`);
+          await ctc.apis.Investor.invest();
         }
-      });
-      await showBalance(acc, i+1);
-      return;
-    },
-  )]);
-})();
+
+        if (numInvestors < investmentStructure.investorQuorum) {
+          await stdlib.wait(investmentStructure.investmentDuration)
+          await ctcProduct.apis.ProductAPI.investmentTimeout();
+        }
+        break;
+
+      // Funding failed, so investors can now collect their fail pay
+      case 'FailPay':
+        for (const [i, ctc] of investorCtcs.slice(0, numInvestorsFailPaid).entries()) {
+          console.log(`Investor #${i+1} collects their fail pay`);
+          await ctc.apis.Investor.collectFailPay();
+        }
+
+        if (numInvestorsFailPaid < numInvestors) {
+          await stdlib.wait(investmentStructure.failPayDuration);
+          await ctcProduct.apis.ProductAPI.failPayTimeout();
+        }
+        break;
+
+      // The contract is now over
+      case 'Finished':
+        console.log("Finishing balances:");
+        await printBals();
+        console.log();
+        break;
+    }
+  } while (phase != 'Finished');
+};
+
+await run(5);
+await run(4, 4);
+await run(4, 2);

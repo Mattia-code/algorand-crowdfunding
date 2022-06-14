@@ -1,115 +1,152 @@
- 'reach 0.1';
+'reach 0.1';
+'use strict';
 
- 
-const MUInt = Maybe(UInt);
-
-const common = {
- showOutcome: Fun([UInt], Null)
-};
- 
-const Params = Tuple(Bytes(128), Bytes(256), UInt, UInt);
+const InvestmentStructureT = Object({
+  creatorInvestment: UInt, // Creator's contribution to the product funding
+  creatorProfit: UInt,     // Creator's profit when the quorum is met
+  investorInvestment: UInt,     // Each investor's contribution to the product funding
+  investorFailProfit: UInt,     // Each investor's profit if the quorum is not met
+  investorQuorum: UInt,         // Target of investors needed to successfully fund the product
+  targetContribution: UInt,
+  investmentDuration: UInt,     // How long funding will be open to investors
+  failPayDuration: UInt,        // How long failure pay will be available for investors to claim
+});
 
 export const main = Reach.App(() => {
-  const Creator = Participant('Creator', {
-    // Specify Creator's interact interface here
-    ...common,
-    startCampaign: Fun([], Params),
-    seeDonation: Fun([Address, UInt], Null),
-    timeout: Fun([], Null),
+  const P = Participant('Product', {
+    investmentStructure: InvestmentStructureT,
+    ready: Fun([], Null),
   });
-  const Investor   = ParticipantClass('Investor', {
-    // Specify Investor's interact interface here
-    ...common,
-    seeParams: Fun([Params], Null),
-    getDonation: Fun([UInt], MUInt),
-    showMap: Fun([Address, UInt], Null)
-  });
-
-  // Investor as API?!
-  const I = API('InvestorAPI', {
+  const E = Participant('Creator', {});
+  const I = API('Investor', {
     invest: Fun([], Null),
-    retriveDonation: Fun([], Null),
+    collectFailPay: Fun([], Null),
   });
-
+  const PA = API('ProductAPI', {
+    startInvestment: Fun([], Null),
+    investmentTimeout: Fun([], Null),
+    failPayTimeout: Fun([], Null),
+  });
+  const Phase = Data({ Investment: Null, FailPay: Null, Finished: Null });
+  const CP = Events('ContractPhase', { phase: [Phase] });
   init();
-  
-  Creator.only(() => {
-  // Binding the value of getSale to the result of interacting with the participant. This happens in a local step. declassify declassifies the argument, in this case that means the value of getSale
-  const [ projectName, projectInfo, targetValue, lenInBlocks ] = declassify(interact.startCampaign());
+
+  const checkInvestmentStructure = (iso) => {
+    const expectedFunds = iso.creatorInvestment
+                        + iso.investorQuorum * iso.investorInvestment;
+    check(iso.creatorProfit <= expectedFunds);
+    check(iso.targetContribution > iso.creatorInvestment)
+    check(iso.investorQuorum > 1);
+    check(iso.investorInvestment > 0);
+    check(iso.investorFailProfit > 0);
+  };
+
+  // A participant representing the product being funded specifies how investment will work
+  P.only(() => {
+    const investmentStructure = declassify(interact.investmentStructure);
+    checkInvestmentStructure(investmentStructure);
   });
-  Creator.publish(projectName, projectInfo, targetValue, lenInBlocks);
+  P.publish(investmentStructure);
+  checkInvestmentStructure(investmentStructure);
+
+  const {
+    creatorInvestment,
+    creatorProfit,
+    investorInvestment,
+    investorQuorum,
+    targetContribution,
+    investorFailProfit,
+    investmentDuration,
+    failPayDuration
+  } = investmentStructure;
+
   commit();
 
-  const amt = 1
-  
-  Creator.pay(amt);
-  const end = lastConsensusTime() + lenInBlocks;
-  const history = new Map(UInt);
+  // Creator kicks off the contract by paying their investment plus enough
+  // to compensate investors in the case of failure
+  const starterInvestment = creatorInvestment
+                          + investorFailProfit * (investorQuorum - 1);
+  E.pay(starterInvestment);
+  commit();
 
-  Investor.interact.seeParams([projectName, projectInfo, targetValue, end]);
+  P.interact.ready();
 
-  const [lastInvestor, lastDonation, currentPrice, numInvestors] =
-    parallelReduce([Creator, amt, amt, 0])
-      .invariant(balance() == currentPrice)
-      .while(lastConsensusTime() <= end)
-      .case(Investor,
-        (() => {
-          const mbid = declassify(interact.getDonation(currentPrice))
-          return ({
-            when: maybe(mbid, false, ((b) => b > 0)),
-            msg : fromSome(mbid, 0)
-          });
-        }),  
-        ((donation) => donation),
-        ((donation) => {
-          const isAmountPresent = fromSome(history[this], 0)
-          if(isAmountPresent){
-            history[this] = isAmountPresent + donation;
-          }else{
-            history[this] = donation;
-          }
-          history[this] = fromSome(history[this], 0) + donation;
-          Creator.interact.seeDonation(this, donation);
-          return [this, donation, currentPrice+donation, isAmountPresent ? numInvestors : numInvestors+1];
-        }))
-      .timeout(absoluteTime(end), () => {
-        Creator.interact.timeout();
-        Creator.publish();
-        return [lastInvestor, lastDonation, currentPrice, numInvestors];
-      });
-
-
-  // const numInvestors = history.size()
-  const failPayTimeout = lastConsensusTime() + lenInBlocks;
-  
-  // forse è la strada giusta!!!
-  if(targetValue>currentPrice){
-    const [timedOut_, unpaidInvestors, reamaningAmount] =
-      parallelReduce([false, numInvestors, currentPrice])
-        .invariant(balance() == reamaningAmount)
-        .while(!timedOut_ && unpaidInvestors > 0)
-        .api_(I.retriveDonation, () => {
-          check(fromSome(history[this], 0)!=0);
-          return [ (k) => {
-            const amountToRefound = fromSome(history[this], 0)
-            if(amountToRefound>0 && balance()>=amountToRefound){
-              transfer(amountToRefound).to(this);
-            }
-            k(null);
-            return [false, unpaidInvestors - 1, reamaningAmount-amountToRefound];
-          }];
-        })
-        .timeout(failPayTimeout, () => {
-          Creator.interact.timeout();
-          Creator.publish();
-          return [true, unpaidInvestors, reamaningAmount];
-        });
+  const awaitProductApi = (apiFunc) => {
+    const [[], k] = call(apiFunc).assume(() => check(this == P));
+    check(this == P);
+    k(null);
   }
 
-  transfer(balance()).to(Creator)
+  awaitProductApi(PA.startInvestment);
+  CP.phase(Phase.Investment());
+
+  // In a real-world application, this would probably be absolute
+  // Using relativeTime is easier for testing
+  const investmentTimeout = relativeTime(investmentDuration);
+  const investors = new Set();
+
+  // Investors are given a change to invest
+  const [timedOut, numInvestors, totalContribution] =
+    parallelReduce([false, 0, starterInvestment])
+    .invariant(balance() == starterInvestment + numInvestors * investorInvestment)
+    .invariant(investors.Map.size() == numInvestors)
+    .invariant(numInvestors <= investorQuorum)
+    .while(!timedOut && numInvestors < investorQuorum)
+    .api_(I.invest, () => {
+      check(!investors.member(this));
+      return [ investorInvestment, (k) => {
+        investors.insert(this);
+        k(null);
+        return [false, numInvestors + 1, totalContribution+investorInvestment];
+      }];
+    })
+    .timeout(investmentTimeout, () => {
+      awaitProductApi(PA.investmentTimeout);
+      return [true, numInvestors, totalContribution];
+    });
+
+  if (totalContribution>=targetContribution) {
+    // Funding succeeded
+    // The creator is paid their creatorship incentive profit,
+    // and the remainder of funds are sent to the product.
+    transfer(creatorProfit).to(E);
+  } else {
+    // Funding failed
+    // The creator must be returned their starter investment plus unnecessary fail pay,
+    // each investor must be given the opportunity to claim their fail pay,
+    // and any unclaimed fail pay will be given to the product.
+    const returnedToCreator = starterInvestment
+                                 - investorFailProfit * numInvestors;
+    transfer(returnedToCreator).to(E);
+
+    CP.phase(Phase.FailPay());
+
+    // In a real-world application, this would probably be absolute
+    // Using relativeTime is easier for testing
+    const failPayTimeout = relativeTime(failPayDuration);
+    const investorFailPay = investorInvestment + investorFailProfit
+
+    const [timedOut_, unpaidInvestors] =
+      parallelReduce([false, numInvestors])
+      .while(!timedOut_ && unpaidInvestors > 0)
+      .invariant(balance() == unpaidInvestors * investorFailPay)
+      .api_(I.collectFailPay, () => {
+        check(investors.member(this));
+        return [ (k) => {
+          investors.remove(this);
+          transfer(investorFailPay).to(this);
+          k(null);
+          return [false, unpaidInvestors - 1];
+        }];
+      })
+      .timeout(failPayTimeout, () => {
+        awaitProductApi(PA.failPayTimeout);
+        return [true, unpaidInvestors];
+      });
+  }
+
+  transfer(balance()).to(P);
+  CP.phase(Phase.Finished());
   commit();
-
-  each([Creator, Investor], () => interact.showOutcome(currentPrice));
   exit();
-
 });
