@@ -4,7 +4,7 @@ const stdlib = loadStdlib(process.env);
 
 const investmentStructure = {
   creatorInvestment: stdlib.parseCurrency(20),
-  creatorProfit: stdlib.parseCurrency(5),
+  // creatorProfit: stdlib.parseCurrency(5),
   investorInvestment: stdlib.parseCurrency(10),
   investorFailProfit: stdlib.parseCurrency(3),
   investorQuorum: 5,

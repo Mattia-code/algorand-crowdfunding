@@ -3,7 +3,6 @@
 
 const InvestmentStructureT = Object({
   creatorInvestment: UInt, // Creator's contribution to the product funding
-  creatorProfit: UInt,     // Creator's profit when the quorum is met
   investorInvestment: UInt,     // Each investor's contribution to the product funding
   investorFailProfit: UInt,     // Each investor's profit if the quorum is not met
   investorQuorum: UInt,         // Target of investors needed to successfully fund the product
@@ -32,9 +31,6 @@ export const main = Reach.App(() => {
   init();
 
   const checkInvestmentStructure = (iso) => {
-    const expectedFunds = iso.creatorInvestment
-                        + iso.investorQuorum * iso.investorInvestment;
-    check(iso.creatorProfit <= expectedFunds);
     check(iso.targetContribution > iso.creatorInvestment)
     check(iso.investorQuorum > 1);
     check(iso.investorInvestment > 0);
@@ -51,7 +47,6 @@ export const main = Reach.App(() => {
 
   const {
     creatorInvestment,
-    creatorProfit,
     investorInvestment,
     investorQuorum,
     targetContribution,
@@ -105,12 +100,7 @@ export const main = Reach.App(() => {
       return [true, numInvestors, totalContribution];
     });
 
-  if (totalContribution>=targetContribution) {
-    // Funding succeeded
-    // The creator is paid their creatorship incentive profit,
-    // and the remainder of funds are sent to the product.
-    transfer(creatorProfit).to(E);
-  } else {
+  if (totalContribution<targetContribution) {
     // Funding failed
     // The creator must be returned their starter investment plus unnecessary fail pay,
     // each investor must be given the opportunity to claim their fail pay,
