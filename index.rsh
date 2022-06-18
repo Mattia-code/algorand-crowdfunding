@@ -6,7 +6,6 @@ const InvestmentStructureT = Object({
   investorInvestment: UInt,     // Each investor's contribution to the product funding
   investorFailProfit: UInt,     // Each investor's profit if the quorum is not met
   investorQuorum: UInt,         // Target of investors needed to successfully fund the product
-  targetContribution: UInt,     // Target of contribution needed to successfully fund the product
   investmentDuration: UInt,     // How long funding will be open to investors
   failPayDuration: UInt,        // How long failure pay will be available for investors to claim
 });
@@ -31,13 +30,12 @@ export const main = Reach.App(() => {
   init();
 
   const checkInvestmentStructure = (iso) => {
-    check(iso.targetContribution > iso.creatorInvestment)
+    check((iso.investorQuorum * iso.investorInvestment) > iso.creatorInvestment)
     check(iso.investorQuorum > 1);
     check(iso.investorInvestment > 0);
     check(iso.investorFailProfit > 0);
   };
 
-  // A participant representing the product being funded specifies how investment will work
   P.only(() => {
     const investmentStructure = declassify(interact.investmentStructure);
     checkInvestmentStructure(investmentStructure);
@@ -49,7 +47,6 @@ export const main = Reach.App(() => {
     creatorInvestment,
     investorInvestment,
     investorQuorum,
-    targetContribution,
     investorFailProfit,
     investmentDuration,
     failPayDuration
@@ -61,6 +58,8 @@ export const main = Reach.App(() => {
   // to compensate investors in the case of failure
   const starterInvestment = creatorInvestment
                           + investorFailProfit * (investorQuorum - 1);
+
+  const targetContribution = investorQuorum * investorInvestment;
 
   const fee = muldiv(starterInvestment,2,100)
   
@@ -106,7 +105,7 @@ export const main = Reach.App(() => {
     // Funding failed
     // The creator must be returned their starter investment plus unnecessary fail pay,
     // each investor must be given the opportunity to claim their fail pay,
-    // and any unclaimed fail pay will be given to the product.
+    // and any unclaimed fail pay will be given to the Creator.
     const returnedToCreator = starterInvestment
                                  - investorFailProfit * numInvestors;
     transfer(returnedToCreator).to(C);
