@@ -59,7 +59,7 @@ export const main = Reach.App(() => {
   const starterInvestment = creatorInvestment
                           + investorFailProfit * (investorQuorum - 1);
 
-  const targetContribution = investorQuorum * investorInvestment;
+  const targetContribution = creatorInvestment + (investorQuorum * investorInvestment);
 
   const fee = muldiv(starterInvestment,2,100)
   
